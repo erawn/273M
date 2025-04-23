@@ -21,13 +21,18 @@ The data is drawn from the \href{https://www.icpsr.umich.edu/web/ICPSR/studies/4
 Otherwise, we also have covariates measured for survey responses to various questions about political attitudes. We have covariates measured for the students in the baseline year, covariates for their parents in the baseline year, and covariates from follow-up surveys. \textbf{Be careful here}. In general, post-treatment covariates will be clear from the name (i.e. student\_1973Married indicates whether the student was married in the 1973 survey). Be mindful that the baseline covariates were all measured in 1965, the treatment occurred between 1965 and 1973, and the outcomes are from 1973 and beyond. We will distribute the Appendix from Henderson and Chatfield that describes the covariates they used, but please reach out with any questions if you have questions about what a particular variable means.
 
 ```{r}
-# Load tidyverse and MatchIt
+# install.packages("httpgd")
+# install.packages("tidyverse")
+# install.packages("MatchIt")
+# lintr::use_lintr(type = "tidyverse")
+1 # Load tidyverse and MatchIt
 # Feel free to load other libraries as you wish
 library(tidyverse)
 library(MatchIt)
 
+xfun::pkg_attach2(c("tidyverse", "MatchIt", "optmatch", "cobalt"))
 # Load ypsps data
-ypsps <- read_csv('data/ypsps.csv')
+ypsps <- read_csv("data/ypsps.csv")
 head(ypsps)
 ```
 
@@ -43,13 +48,95 @@ Matching is usually used in observational studies to to approximate random assig
 \end{enumerate}
 
 ```{r}
+n <- nrow(ypsps)
+print(n)
 # Generate a vector that randomly assigns each unit to treatment/control
-
+ran_assignment <- as.numeric(rbernoulli(n, p = .5))
+df <- cbind(ypsps, ran_assignment)
+head(df)
 # Choose a baseline covariate (use dplyr for this)
 
+df <- df %>%
+    mutate(
+        b_cov = case_when(
+            student_Phone == 0 ~ "No Phone",
+            student_Phone == 1 ~ "Phone"
+        ),
+        treatment = case_when(
+            ran_assignment == 0 ~ "Control",
+            ran_assignment == 1 ~ "Treatment"
+        )
+    )
+
+
 # Visualize the distribution by treatment/control (ggplot)
+ggplot(df, aes(x = b_cov, fill = treatment)) +
+    geom_bar() +
+    geom_text(
+        stat = "count", aes(label = ..count..),
+        vjust = -0.5
+    ) +
+    facet_grid(cols = vars(treatment)) +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    labs(
+        title = "Distribution of Phone Ownership Category by Treatment Status",
+        fill = ""
+    )
 
 # Simulate this 10,000 times (monte carlo simulation - see R Refresher for a hint)
+# simulated <- data.frame(n = 1:100000)
+# simulated %>%
+#   mutate(assignment = as.numeric(rbernoulli(n,p=.5)))
+#
+# simulated %>% group_by(b_cov,treatment) %>% summarize(n())
+assignment <- as.numeric(rbernoulli(n, p = .5))
+df <- cbind(ypsps, assignment)
+df <- df %>%
+    mutate(
+        b_cov = case_when(
+            student_Phone == 0 ~ "No Phone",
+            student_Phone == 1 ~ "Phone"
+        ),
+        treatment = case_when(
+            assignment == 0 ~ "Control",
+            assignment == 1 ~ "Treatment"
+        )
+    ) %>%
+    group_by(b_cov, treatment) %>%
+    summarize(n()) %>%
+    pivot_wider(names_from = c(b_cov, treatment), values_from = "n()")
+print(df)
+sim <- function() {
+    assignment <- as.numeric(rbernoulli(n, p = .5))
+    df <- cbind(ypsps, assignment)
+    df <- df %>%
+        mutate(
+            b_cov = case_when(
+                student_Phone == 0 ~ "No Phone",
+                student_Phone == 1 ~ "Phone"
+            ),
+            treatment = case_when(
+                assignment == 0 ~ "Control",
+                assignment == 1 ~ "Treatment"
+            )
+        ) %>%
+        group_by(b_cov, treatment) %>%
+        summarize(n()) %>%
+        pivot_wider(names_from = c(b_cov, treatment), values_from = "n()")
+}
+
+sim_results <- apply(data.frame(1:100), 1, function(x) sim()) %>%
+    reduce(full_join) %>%
+    rename(
+        NoPhoneControl = "No Phone_Control",
+        NoPhoneTreatment = "No Phone_Treatment",
+    )
+
+ggplot(sim_results, aes(x = NoPhoneControl, y = NoPhoneTreatment)) +
+    geom_point(shape = 1)
+ggplot(sim_results, aes(x = Phone_Control, y = Phone_Treatment)) +
+    geom_point(shape = 1)
 ```
 
 ## Questions
@@ -57,19 +144,65 @@ Matching is usually used in observational studies to to approximate random assig
     \item \textbf{What do you see across your simulations? Why does independence of treatment assignment and baseline covariates not guarantee balance of treatment assignment and baseline covariates?}
 \end{enumerate}
 
-Your Answer:...
+Your Answer: Across the simulations, we see a relatively stable but never totally consistent assignment, so the baseline covariate is never exactly evenly assigned across the treatment and control. Independence doesn't guarantee balance because independence just means that there is a probability of .5 for each sample to be assigned to the treatment or condition, not that in a finite dataset there would be exactly half of the samples assigned to each. If we generated an infinite dataset, we would say that the balance would trend towards zero --- the difference between assignments would become proportionally smaller the longer we kept generating data, in the same way that flipping a coin with a .5 probability for each side doesn't guarantee you'll get exactly 5 heads and 5 tails if you flip it 10 times.
 
 # Propensity Score Matching
 
 ## One Model
 Select covariates that you think best represent the "true" model predicting whether a student chooses to attend college, and estimate a propensity score model to calculate the Average Treatment Effect on the Treated (ATT). Plot the balance of the top 10 (or fewer if you select fewer covariates). Report the balance of the p-scores across both the treatment and control groups, and using a threshold of standardized mean difference of p-score $\leq .1$, report the number of covariates that meet that balance threshold.
 
-```{r}
+```{r fig.width = 14}
+head(df)
+df <- ypsps
+assignment <- as.numeric(rbernoulli(n, p = .5))
+df <- cbind(ypsps, assignment)
 # Select covariates that represent the "true" model for selection, fit model
 
-# Plot the balance for the top 10 covariates
+# first_model <-
+#     glm(assignment ~ parent_HHInc + parent_OwnHome + parent_EducHH + parent_EducW + parent_Knowledge + parent_Gen + parent_Employ +,
+#         family = binomial(),
+#         data = df
+#     )
+# summary(first_model)
 
+
+
+covar_formula <- as.formula(paste("y~", paste(c("student_GPA","parent_HHInc"), collapse="+"))) 
+final_form <- paste("assignment ~", covar_formula)
+final_form
+first_model <- matchit(
+    formula = formula(final_form[3]),
+    data = df,
+    method = "exact",
+    estimand = "ATT"
+)
+
+first_model <- matchit(
+    formula = assignment ~ student_GPA + parent_HHInc + parent_TrOthers + student_EgoA + student_Phone + parent_Money + student_button + student_money + student_TrOthers + student_vote,
+    data = df,
+    method = "exact",
+    estimand = "ATT"
+)
+
+first_model_data <- match.data(first_model)
+lm_first_model <- lm( college ~ assignment + parent_HHInc + parent_TrOthers + student_EgoA + student_Phone + parent_Money + student_button + student_money + student_TrOthers + student_vote,
+                     data = first_model_data,
+                     weights = weights)
+
+lm_exact_att_summ <- summary(lm_first_model)
+lm_exact_att_summ
+
+lm_exact_att_summ$coefficients
+
+ATT_exact <- lm_exact_att_summ$coefficients["assignment", "Estimate"]
+ATT_exact
+# Average Treatemement Effect on the Treated is .048
+
+# Plot the balance for the top 10 covariates
+love.plot(first_model, binary = "std", abs = TRUE, var.order = "unadjusted", thresholds = c(m = .1), stars = "raw", )
 # Report the overall balance and the proportion of covariates that meet the balance threshold
+
+# Of the 10 covariates selected, only three had a standardized mean difference above the threshold, so .3 of the selected covariates, which were student_GPA, student_Phone, and parent_HHinc. This makes sense to me as factors which would make a difference in students deciding to attend college: students with better GPA and richer parents (and having a phone at home as a proxy for household income seems fair) would plausibly go to college more often. 
 ```
 
 ## Simulations
@@ -83,9 +216,80 @@ Henderson/Chatfield argue that an improperly specified propensity score model ca
     \item Finally choose 10 random models and plot their covariate balance plots (you may want to use a library like \href{https://cran.r-project.org/web/packages/gridExtra/index.html}{gridExtra} to arrange these)
 \end{itemize}
 
+
+
 \textbf{Note: There are lots of post-treatment covariates in this dataset (about 50!)! You need to be careful not to include these in the pre-treatment balancing. Many of you are probably used to selecting or dropping columns manually, or positionally. However, you may not always have a convenient arrangement of columns, nor is it fun to type out 50 different column names. Instead see if you can use dplyr 1.0.0 functions to programatically drop post-treatment variables (\href{https://www.tidyverse.org/blog/2020/03/dplyr-1-0-0-select-rename-relocate/}{here} is a useful tutorial).}
 
 ```{r}
+
+covars <- colnames(df %>% select((starts_with("parent_") | starts_with("student_")) & !(starts_with("student_1973") | starts_with("student_1982"))))
+
+
+
+
+sim <- function() {
+    num_covariates <- round(runif(n=1, min=1, max=length(covars)),0)
+    sampled_covars <- sample(x=covars, size=num_covariates)  
+    sampled_covars
+    covar_formula <- as.formula(paste("assignment ~", paste(sampled_covars, collapse="+")))   
+    
+    covar_formula
+    
+    first_model <- matchit(
+        formula = formula(covar_formula),
+        data = df,
+        method = "exact",
+        estimand = "ATT"
+    )
+    
+    first_model_data <- match.data(first_model)
+    lm_first_model <- lm( college ~ assignment + covar_formula,
+                         data = first_model_data,
+                         weights = weights)
+    
+    lm_exact_att_summ <- summary(lm_first_model)
+    lm_exact_att_summ
+    
+    lm_exact_att_summ$coefficients
+    
+    ATT_exact <- lm_exact_att_summ$coefficients["assignment", "Estimate"]
+    ATT_exact
+}
+
+sim_results <- apply(data.frame(1:100), 1, function(x) sim()) %>%
+    reduce(full_join) %>%
+    rename(
+        NoPhoneControl = "No Phone_Control",
+        NoPhoneTreatment = "No Phone_Treatment",
+    )
+
+match_prop_att_data <- match.data(match_prop_att)
+
+love.plot(first_model, binary = "std", abs = TRUE, var.order = "unadjusted", thresholds = c(m = .1), stars = "raw", )
+
+match_prop_att <- matchit(
+    formula = assignment ~ parent_Newspaper + parent_Radio + parent_TV + parent_Magazine + parent_LifeWish + parent_GLuck + parent_FPlans + parent_WinArg + parent_StrOpinion + parent_MChange + parent_TrOthers + parent_OthHelp + parent_OthFair + parent_PID + parent_SPID + parent_Vote + parent_Persuade + parent_Rally + parent_OthAct + parent_PolClub + parent_Button + parent_Money + parent_Participate1 + parent_Participate2 + parent_ActFrq + parent_GovtOpinion + parent_GovtCrook + parent_GovtWaste + parent_TrGovt + parent_GovtSmart + parent_Govt4All + parent_Employ + parent_EducHH + parent_EducW + parent_ChurchOrg + parent_FratOrg + parent_ProOrg + parent_CivicOrg + parent_CLOrg + parent_NeighClub + parent_SportClub + parent_InfClub + parent_FarmGr + parent_WomenClub + parent_MiscClub + parent_ClubLev + parent_FInc + parent_HHInc + parent_OwnHome + parent_Senate + parent_Tito + parent_Court + parent_Govern + parent_CCamp + parent_FDR + parent_Knowledge + parent_Gen + parent_Race + student_vote + student_meeting + student_other + student_button + student_money + student_communicate + student_demonstrate + student_community + student_ppnscal + student_PubAff + student_Newspaper + student_Radio + student_TV + student_Magazine + student_FamTalk + student_FrTalk + student_AdultTalk + student_PID + student_SPID + student_GovtOpinion + student_GovtCrook + student_GovtWaste + student_TrGovt + student_GovtSmart + student_Govt4All + student_Cynic + student_LifeWish + student_GLuck + student_FPlans + student_EgoA + student_WinArg + student_StrOpinion + student_MChange + student_EgoB + student_TrOthers + student_OthHelp + student_OthFair + student_Trust + student_Senate + student_Tito + student_Court + student_Govern + student_CCamp + student_FDR + student_Knowledge + student_NextSch + student_GPA + student_SchOfficer + student_SchPublish + student_Hobby + student_SchClub + student_OccClub + student_NeighClub + student_RelClub + student_YouthOrg + student_MiscClub + student_ClubLev + student_Phone + student_Gen + student_Race,
+    data = df,
+    distance = "glm",
+    estimand = "ATT"
+)
+summary(match_prop_att)
+
+match_prop_att["distance"]
+
+love.plot(match_prop_att, binary = "std", abs = TRUE, var.order = "unadjusted", thresholds = c(m = .1), stars = "raw", )
+
+match_prop_att_data <- match.data(match_prop_att)
+
+head(match_prop_att_data)
+lm_prop_att <- lm(college ~ assignment + parent_Newspaper + parent_Radio + parent_TV + parent_Magazine + parent_LifeWish + parent_GLuck + parent_FPlans + parent_WinArg + parent_StrOpinion + parent_MChange + parent_TrOthers + parent_OthHelp + parent_OthFair + parent_PID + parent_SPID + parent_Vote + parent_Persuade + parent_Rally + parent_OthAct + parent_PolClub + parent_Button + parent_Money + parent_Participate1 + parent_Participate2 + parent_ActFrq + parent_GovtOpinion + parent_GovtCrook + parent_GovtWaste + parent_TrGovt + parent_GovtSmart + parent_Govt4All + parent_Employ + parent_EducHH + parent_EducW + parent_ChurchOrg + parent_FratOrg + parent_ProOrg + parent_CivicOrg + parent_CLOrg + parent_NeighClub + parent_SportClub + parent_InfClub + parent_FarmGr + parent_WomenClub + parent_MiscClub + parent_ClubLev + parent_FInc + parent_HHInc + parent_OwnHome + parent_Senate + parent_Tito + parent_Court + parent_Govern + parent_CCamp + parent_FDR + parent_Knowledge + parent_Gen + parent_Race + student_vote + student_meeting + student_other + student_button + student_money + student_communicate + student_demonstrate + student_community + student_ppnscal + student_PubAff + student_Newspaper + student_Radio + student_TV + student_Magazine + student_FamTalk + student_FrTalk + student_AdultTalk + student_PID + student_SPID + student_GovtOpinion + student_GovtCrook + student_GovtWaste + student_TrGovt + student_GovtSmart + student_Govt4All + student_Cynic + student_LifeWish + student_GLuck + student_FPlans + student_EgoA + student_WinArg + student_StrOpinion + student_MChange + student_EgoB + student_TrOthers + student_OthHelp + student_OthFair + student_Trust + student_Senate + student_Tito + student_Court + student_Govern + student_CCamp + student_FDR + student_Knowledge + student_NextSch + student_GPA + student_SchOfficer + student_SchPublish + student_Hobby + student_SchClub + student_OccClub + student_NeighClub + student_RelClub + student_YouthOrg + student_MiscClub + student_ClubLev + student_Phone + student_Gen + student_Race,
+    data = match_prop_att_data,
+    weights = weights
+)
+
+
+df <-
+    df %>% mutate(propensity_score = predict(first_model))
 # Remove post-treatment covariates
 
 # Randomly select features
